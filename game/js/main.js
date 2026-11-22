@@ -1,99 +1,105 @@
-// main.js — VAULTBREAK bootstrap: the game loop, the state machine
+// main.js — GILDED NIGHT bootstrap: the game loop, the state machine
 // (title → playing → caught / room clear → won), keyboard + mouse
 // input, the alarm meter, and the room transitions.
 
-import { buildRooms, solidsOf, HUD_TOP } from './level.js';
-import { makeGuard, updateGuard, distractGuard } from './guard.js';
-import { makeCamera, updateCamera } from './camera.js';
-import { makePlayer, updatePlayer, throwSmoke, fireEmp, tossCoin, collectPickups, requiredLootTaken, playerOnExit } from './player.js';
+import { buildRooms, solidsOf, sightOf, HUD_H } from './level.js';
+import { spawnGuard, stepGuard, lureGuard, GUARD_R } from './guard.js';
+import { spawnCamera, stepCamera } from './camera.js';
+import { spawnThief, stepThief, useSmoke, useEmp, tossCoin, grabPickups, targetTaken, thiefOnExit, totalLoot } from './player.js';
 import { drawGame } from './render.js';
-import * as audio from './audio.js';
+import * as sfx from './audio.js';
 import { sceneFromUrl, applyScene } from './shots.js';
+import { circlesOverlap } from './vision.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const ALARM_RISE_GUARD = 28;
-const ALARM_RISE_CAMERA = 20;
-const ALARM_DECAY = 6;
+const ALARM_GUARD = 30;
+const ALARM_CAMERA = 45;
+const ALARM_DECAY = 14;
 
 const state = {
-  screen: 'title',
+  mode: 'title',
   rooms: buildRooms(),
   roomIndex: 0,
   room: null,
-  player: null,
+  thief: null,
   guards: [],
-  cameras: [],
+  cams: [],
   alarm: 0,
   score: 0,
-  elapsedMs: 0,
-  empUntil: 0,
+  elapsed: 0,
+  empLeft: 0,
   clouds: [],
   coins: [],
   popups: [],
   muted: false,
-  anyWatcherSees: false,
+  spotted: false,
   banner: '',
   bannerUntil: 0,
+  frozen: false,
+  caughtWhy: '',
 };
 
 const keys = new Set();
-let lastFrameMs = 0;
+let lastMs = 0;
 let heistStartMs = 0;
+
+function freshRoom(index) {
+  return buildRooms()[index];
+}
 
 function loadRoom(index) {
   state.roomIndex = index;
   state.room = state.rooms[index];
-  state.guards = state.room.guards.map(makeGuard);
-  state.cameras = state.room.cameras.map(makeCamera);
+  state.guards = state.room.guards.map(spawnGuard);
+  state.cams = state.room.cams.map(spawnCamera);
   state.clouds = [];
   state.coins = [];
   state.popups = [];
-  state.empUntil = 0;
-  state.alarm = Math.max(0, state.alarm - 25);
-  state.player.x = state.room.playerStart.x;
-  state.player.y = state.room.playerStart.y;
-  state.player.facing = -Math.PI / 2;
-  state.player.smokeCharges = 3;
-  state.player.empCharges = 2;
-  state.player.coinCharges = 5;
-  state.banner = state.room.name + ' — ' + state.room.objective;
+  state.empLeft = 0;
+  state.alarm = Math.max(0, state.alarm - 20);
+  state.thief.x = state.room.spawn.x;
+  state.thief.y = state.room.spawn.y;
+  state.thief.dir = -Math.PI / 2;
+  state.thief.smoke = 3;
+  state.thief.emp = 2;
+  state.thief.coins = 5;
+  state.banner = state.room.name + ' — ' + state.room.goal;
   state.bannerUntil = performance.now() + 5000;
 }
 
 function startHeist() {
   state.rooms = buildRooms();
-  state.player = makePlayer(state.rooms[0].playerStart);
+  state.thief = spawnThief(state.rooms[0].spawn);
   state.score = 0;
-  state.elapsedMs = 0;
+  state.elapsed = 0;
   state.alarm = 0;
+  state.frozen = false;
   heistStartMs = performance.now();
   loadRoom(0);
-  state.screen = 'playing';
-  audio.ensureAudio();
+  state.mode = 'playing';
+  sfx.wakeAudio();
 }
 
 function finishRoom() {
-  const timeBonus = Math.max(0, 3000 - Math.floor(state.elapsedMs / 100));
+  const timeBonus = Math.max(0, 3000 - Math.floor(state.elapsed / 100));
   const alarmBonus = Math.round((100 - state.alarm) * 2);
-  state.score = state.player.lootValue + timeBonus + alarmBonus;
-  audio.playRoomClear();
-  if (state.roomIndex >= state.rooms.length - 1) {
-    state.screen = 'won';
-  } else {
-    state.screen = 'roomclear';
-  }
+  state.score = totalLoot(state.rooms) + timeBonus + alarmBonus;
+  sfx.sfxClear();
+  state.mode = state.roomIndex >= state.rooms.length - 1 ? 'won' : 'clear';
 }
 
-function getCaught() {
-  state.screen = 'caught';
-  audio.playCaught();
+function getCaught(why) {
+  state.caughtWhy = why;
+  state.mode = 'caught';
+  sfx.sfxCaught();
 }
 
 function retryRoom() {
+  state.rooms[state.roomIndex] = freshRoom(state.roomIndex);
   state.alarm = 0;
   loadRoom(state.roomIndex);
-  state.screen = 'playing';
+  state.mode = 'playing';
 }
 
 function addPopup(x, y, text, color) {
@@ -101,66 +107,74 @@ function addPopup(x, y, text, color) {
 }
 
 function updatePlaying(dt, now) {
+  if (state.frozen) return;
   const solids = solidsOf(state.room);
-  const empActive = state.empUntil > now;
+  const sight = sightOf(state.room);
+  state.empLeft = Math.max(0, state.empLeft - dt);
 
-  updatePlayer(state.player, dt, keys, solids);
+  stepThief(state.thief, dt, keys, solids, state.room.ducts);
 
   let guardSees = false;
-  for (const guard of state.guards) {
-    if (updateGuard(guard, dt, state.player, solids, state.clouds, state.alarm, now / 1000)) {
+  for (const g of state.guards) {
+    if (stepGuard(g, dt, state.thief, sight, state.room.ducts, state.clouds, state.alarm, now / 1000)) {
       guardSees = true;
     }
   }
-  let cameraSees = false;
-  for (const camera of state.cameras) {
-    if (updateCamera(camera, dt, now / 1000, state.player, solids, state.clouds, empActive)) {
-      cameraSees = true;
+  let camSees = false;
+  for (const cam of state.cams) {
+    if (stepCamera(cam, dt, now / 1000, state.thief, sight, state.room.ducts, state.clouds, state.empLeft)) {
+      camSees = true;
     }
   }
-  state.anyWatcherSees = guardSees || cameraSees;
+  state.spotted = guardSees || camSees;
 
-  if (guardSees) state.alarm += ALARM_RISE_GUARD * dt;
-  if (cameraSees) state.alarm += ALARM_RISE_CAMERA * dt;
-  if (!guardSees && !cameraSees) state.alarm = Math.max(0, state.alarm - ALARM_DECAY * dt);
+  if (guardSees) state.alarm += ALARM_GUARD * dt;
+  if (camSees) state.alarm += ALARM_CAMERA * dt;
+  if (!guardSees && !camSees) state.alarm = Math.max(0, state.alarm - ALARM_DECAY * dt);
   state.alarm = Math.min(100, state.alarm);
-  audio.playAlarmHeartbeat(state.alarm, now);
+  sfx.sfxHeartbeat(state.alarm, now);
 
-  for (const cloud of state.clouds) cloud.ttl -= dt;
-  state.clouds = state.clouds.filter((cloud) => cloud.ttl > 0);
-  for (const coin of state.coins) coin.ttl -= dt;
-  state.coins = state.coins.filter((coin) => coin.ttl > 0);
-  for (const popup of state.popups) {
-    popup.ttl -= dt;
-    popup.y -= 22 * dt;
+  for (const c of state.clouds) c.ttl -= dt;
+  state.clouds = state.clouds.filter((c) => c.ttl > 0);
+  for (const c of state.coins) c.ttl -= dt;
+  state.coins = state.coins.filter((c) => c.ttl > 0);
+  for (const p of state.popups) {
+    p.ttl -= dt;
+    p.y -= 22 * dt;
   }
-  state.popups = state.popups.filter((popup) => popup.ttl > 0);
+  state.popups = state.popups.filter((p) => p.ttl > 0);
 
-  for (const event of collectPickups(state.player, state.room)) {
-    if (event.type === 'keycard') {
-      audio.playKeycard();
-      audio.playDoorOpen();
-      addPopup(state.player.x, state.player.y - 30, 'KEYCARD — VAULT DOOR OPEN', '#7fd8cf');
+  for (const ev of grabPickups(state.thief, state.room)) {
+    if (ev.type === 'keycard') {
+      sfx.sfxKeycard();
+      sfx.sfxDoor();
+      addPopup(state.thief.x, state.thief.y - 32, 'KEYCARD — VAULT DOOR OPEN', '#7fd8cf');
     } else {
-      audio.playPickup(event.value);
-      addPopup(state.player.x, state.player.y - 30, `+$${event.value} ${event.label}`, '#e8c15a');
+      sfx.sfxPickup(ev.value);
+      addPopup(state.thief.x, state.thief.y - 32, `+$${ev.value} ${ev.label}`, '#e8c15a');
     }
   }
 
   if (state.alarm >= 100) {
-    getCaught();
+    getCaught('The alarm hit 100% — the crew got pinched.');
     return;
   }
-  if (requiredLootTaken(state.room) && playerOnExit(state.player, state.room)) {
+  for (const g of state.guards) {
+    if (g.mode === 'pursue' && circlesOverlap(g.x, g.y, GUARD_R, state.thief.x, state.thief.y, state.thief.r)) {
+      getCaught('A guard grabbed you in the open.');
+      return;
+    }
+  }
+  if (targetTaken(state.room) && thiefOnExit(state.thief, state.room)) {
     finishRoom();
   }
 }
 
 function frame(now) {
-  const dt = Math.min(0.05, lastFrameMs === 0 ? 0.016 : (now - lastFrameMs) / 1000);
-  lastFrameMs = now;
-  if (state.screen === 'playing') {
-    state.elapsedMs = now - heistStartMs;
+  const dt = Math.min(0.05, lastMs === 0 ? 0.016 : (now - lastMs) / 1000);
+  lastMs = now;
+  if (state.mode === 'playing') {
+    state.elapsed = now - heistStartMs;
     updatePlaying(dt, now);
   }
   drawGame(ctx, state, now);
@@ -180,38 +194,38 @@ window.addEventListener('keydown', (event) => {
   if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) {
     event.preventDefault();
   }
-  audio.ensureAudio();
+  sfx.wakeAudio();
   if (key === 'm') {
-    state.muted = audio.toggleMute();
+    state.muted = sfx.toggleMute();
     return;
   }
-  if (state.screen === 'title' && (key === 'enter' || key === ' ')) {
+  if (state.mode === 'title' && (key === 'enter' || key === ' ')) {
     startHeist();
     return;
   }
-  if (state.screen === 'roomclear' && (key === 'enter' || key === ' ')) {
+  if (state.mode === 'clear' && (key === 'enter' || key === ' ')) {
     loadRoom(state.roomIndex + 1);
-    state.screen = 'playing';
+    state.mode = 'playing';
     return;
   }
-  if ((state.screen === 'caught' || state.screen === 'won') && key === 'r') {
-    if (state.screen === 'caught') retryRoom();
+  if ((state.mode === 'caught' || state.mode === 'won') && key === 'r') {
+    if (state.mode === 'caught') retryRoom();
     else startHeist();
     return;
   }
-  if (key === 'r' && state.screen === 'playing') {
+  if (key === 'r' && state.mode === 'playing') {
     retryRoom();
     return;
   }
-  if (state.screen !== 'playing') return;
+  if (state.mode !== 'playing') return;
   keys.add(key);
   if (key === '1') {
-    if (throwSmoke(state.player, state.clouds)) audio.playSmoke();
+    if (useSmoke(state.thief, state.clouds)) sfx.sfxSmoke();
   } else if (key === '2') {
-    const seconds = fireEmp(state.player);
+    const seconds = useEmp(state.thief);
     if (seconds > 0) {
-      state.empUntil = performance.now() + seconds * 1000;
-      audio.playEmp();
+      state.empLeft = seconds;
+      sfx.sfxEmp();
     }
   }
 });
@@ -220,32 +234,36 @@ window.addEventListener('keyup', (event) => {
   keys.delete(event.key.toLowerCase());
 });
 
+window.addEventListener('blur', () => {
+  keys.clear();
+});
+
 canvas.addEventListener('mousedown', (event) => {
-  audio.ensureAudio();
-  if (state.screen === 'title') {
+  sfx.wakeAudio();
+  if (state.mode === 'title') {
     startHeist();
     return;
   }
-  if (state.screen !== 'playing') return;
+  if (state.mode !== 'playing') return;
   const point = canvasPoint(event);
-  if (point.y < HUD_TOP) return;
-  const coin = tossCoin(state.player, point.x, point.y);
+  if (point.y < HUD_H) return;
+  const coin = tossCoin(state.thief, point.x, point.y);
   if (!coin) return;
   state.coins.push(coin);
-  audio.playCoinToss();
-  for (const guard of state.guards) distractGuard(guard, coin.x, coin.y);
+  sfx.sfxCoin();
+  for (const g of state.guards) lureGuard(g, coin.x, coin.y);
 });
 
 // Boot: title screen over room one, or a screenshot scene straight in.
-state.player = makePlayer(state.rooms[0].playerStart);
+state.thief = spawnThief(state.rooms[0].spawn);
 loadRoom(0);
-state.screen = 'title';
+state.mode = 'title';
 const scene = sceneFromUrl();
 if (scene) {
-  const targetRoom = { cover: 0, corridor: 1, vault: 2, caught: 0 }[scene] ?? 0;
+  const targetRoom = { cover: 0, corridor: 1, vault: 2, getaway: 2 }[scene] ?? 0;
   startHeist();
   loadRoom(targetRoom);
   applyScene(state, scene);
-  state.screen = 'playing';
+  state.mode = 'playing';
 }
 requestAnimationFrame(frame);
