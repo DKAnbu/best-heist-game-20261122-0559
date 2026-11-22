@@ -1,99 +1,100 @@
-// vision.js — pure geometry for sight lines and vision cones.
-// Nothing here touches the canvas or the game state; guard.js and
-// camera.js ask these helpers whether an eye can see the thief.
+// vision.js — line-of-sight and cone geometry for GILDED NIGHT.
+// Pure geometry: no game state, no drawing. Every sight test in the
+// game (guards, cameras) goes through inCone() here.
 
-export function distanceBetween(ax, ay, bx, by) {
-  const dx = bx - ax;
-  const dy = by - ay;
-  return Math.hypot(dx, dy);
+export function pointInRect(px, py, r) {
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
 }
 
-export function angleDifference(a, b) {
-  let d = a - b;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return d;
-}
-
-// True when the point (px, py) sits inside a vision cone whose tip is
-// (ex, ey), facing `facing` radians, reaching `range` pixels wide and
-// opening `halfAngle` radians to each side.
-export function pointInsideCone(ex, ey, facing, range, halfAngle, px, py) {
-  const dist = distanceBetween(ex, ey, px, py);
-  if (dist > range) return false;
-  if (dist < 12) return true;
-  const toTarget = Math.atan2(py - ey, px - ex);
-  return Math.abs(angleDifference(toTarget, facing)) <= halfAngle;
-}
-
-// Segment (x1,y1)-(x2,y2) against one axis-aligned rectangle.
-// Uses the slab method: true when the segment crosses the rect.
-export function segmentHitsRect(x1, y1, x2, y2, rect) {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  let tMin = 0;
-  let tMax = 1;
-  if (Math.abs(dx) < 1e-9) {
-    if (x1 < rect.x || x1 > rect.x + rect.w) return false;
-  } else {
-    let t1 = (rect.x - x1) / dx;
-    let t2 = (rect.x + rect.w - x1) / dx;
-    if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
-    tMin = Math.max(tMin, t1);
-    tMax = Math.min(tMax, t2);
-    if (tMin > tMax) return false;
-  }
-  if (Math.abs(dy) < 1e-9) {
-    if (y1 < rect.y || y1 > rect.y + rect.h) return false;
-  } else {
-    let t1 = (rect.y - y1) / dy;
-    let t2 = (rect.y + rect.h - y1) / dy;
-    if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
-    tMin = Math.max(tMin, t1);
-    tMax = Math.min(tMax, t2);
-    if (tMin > tMax) return false;
-  }
-  return true;
-}
-
-// True when any solid in `solids` blocks the sight line from the eye
-// to the target. Walls and tall cover block sight; low cover does not.
-export function sightLineBlocked(ex, ey, tx, ty, solids) {
-  for (const solid of solids) {
-    if (solid.blocksSight && segmentHitsRect(ex, ey, tx, ty, solid)) return true;
+// True when the segment (x0,y0)-(x1,y1) crosses any rect in blockers.
+// Sampled in small steps: cheap, and exact enough for cone edges.
+export function losBlocked(x0, y0, x1, y1, blockers) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const dist = Math.hypot(dx, dy);
+  const steps = Math.max(1, Math.ceil(dist / 8));
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const px = x0 + dx * t;
+    const py = y0 + dy * t;
+    for (let j = 0; j < blockers.length; j++) {
+      if (pointInRect(px, py, blockers[j])) return true;
+    }
   }
   return false;
 }
 
-// True when the segment from eye to target passes through a smoke
-// cloud, or the target is standing inside one.
-export function sightLineSmoked(ex, ey, tx, ty, clouds) {
-  for (const cloud of clouds) {
-    if (distanceBetween(tx, ty, cloud.x, cloud.y) < cloud.r) return true;
-    if (segmentHitsCircle(ex, ey, tx, ty, cloud.x, cloud.y, cloud.r)) return true;
+// True when (px,py) lies inside the watcher's cone and the line of
+// sight is clear. angle = watcher facing, halfAngle = cone half-width.
+export function inCone(px, py, wx, wy, angle, range, halfAngle, blockers) {
+  const dx = px - wx;
+  const dy = py - wy;
+  const d = Math.hypot(dx, dy);
+  if (d > range) return false;
+  if (d < 12) return true;
+  let diff = Math.atan2(dy, dx) - angle;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  if (Math.abs(diff) > halfAngle) return false;
+  return !losBlocked(wx, wy, px, py, blockers);
+}
+
+// True when the point sits inside any smoke cloud.
+export function hiddenBySmoke(x, y, clouds) {
+  for (const c of clouds) {
+    const dx = x - c.x;
+    const dy = y - c.y;
+    if (dx * dx + dy * dy < c.r * c.r) return true;
   }
   return false;
 }
 
-export function segmentHitsCircle(x1, y1, x2, y2, cx, cy, r) {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq < 1e-9) return distanceBetween(x1, y1, cx, cy) < r;
-  let t = ((cx - x1) * dx + (cy - y1) * dy) / lenSq;
-  t = Math.max(0, Math.min(1, t));
-  const closestX = x1 + t * dx;
-  const closestY = y1 + t * dy;
-  return distanceBetween(closestX, closestY, cx, cy) < r;
+// True when the point sits inside a service duct (crawling low).
+export function insideDuct(x, y, ducts) {
+  for (const d of ducts) {
+    if (pointInRect(x, y, d)) return true;
+  }
+  return false;
 }
 
-// Full visibility test for one watcher: cone + range + clear sight
-// line + no smoke in the way. Returns true only when the watcher
-// can actually see the thief right now.
-export function watcherSeesThief(watcher, thiefX, thiefY, solids, clouds) {
-  if (!pointInsideCone(watcher.x, watcher.y, watcher.facing, watcher.range,
-      watcher.halfAngle, thiefX, thiefY)) return false;
-  if (sightLineBlocked(watcher.x, watcher.y, thiefX, thiefY, solids)) return false;
-  if (sightLineSmoked(watcher.x, watcher.y, thiefX, thiefY, clouds)) return false;
-  return true;
+// Push a circle (cx,cy,r) out of a rect; returns corrected [x, y].
+export function pushCircleOutOfRect(cx, cy, r, rect) {
+  const nx = Math.max(rect.x, Math.min(cx, rect.x + rect.w));
+  const ny = Math.max(rect.y, Math.min(cy, rect.y + rect.h));
+  const dx = cx - nx;
+  const dy = cy - ny;
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= r * r) return [cx, cy];
+  if (d2 > 0.0001) {
+    const d = Math.sqrt(d2);
+    return [nx + (dx / d) * r, ny + (dy / d) * r];
+  }
+  // Centre inside the rect: push out along the smallest penetration.
+  const left = cx - rect.x;
+  const right = rect.x + rect.w - cx;
+  const top = cy - rect.y;
+  const bottom = rect.y + rect.h - cy;
+  const m = Math.min(left, right, top, bottom);
+  if (m === left) return [rect.x - r, cy];
+  if (m === right) return [rect.x + rect.w + r, cy];
+  if (m === top) return [cx, rect.y - r];
+  return [cx, rect.y + rect.h + r];
+}
+
+export function circlesOverlap(ax, ay, ar, bx, by, br) {
+  const dx = ax - bx;
+  const dy = ay - by;
+  const rr = ar + br;
+  return dx * dx + dy * dy < rr * rr;
+}
+
+export function clamp(v, lo, hi) {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+export function angleLerp(a, b, t) {
+  let diff = b - a;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return a + diff * t;
 }
