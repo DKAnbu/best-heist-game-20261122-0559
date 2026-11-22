@@ -1,208 +1,246 @@
-// level.js — the three rooms of the heist and the collision helpers.
-// Every room is plain data: walls, cover, loot, guards, cameras, the
-// keycard door, the player's start and the getaway exit. buildRooms()
-// returns fresh copies so a retry starts from a clean room.
+// level.js — the three rooms of GILDED NIGHT and the collision rules.
+// Every room is plain data: walls, cover, velvet ropes, ducts, lamps,
+// lasers, doors, loot, guards, cameras, the spawn and the exit.
+// buildRooms() returns fresh copies so a retry starts from a clean room.
 
-export const VIEW_WIDTH = 1280;
-export const VIEW_HEIGHT = 720;
-export const HUD_TOP = 72;
-export const PLAYER_RADIUS = 14;
-export const WALL = 14;
+import { pushCircleOutOfRect } from './vision.js';
 
-function borderWalls() {
+export const VIEW_W = 1280;
+export const VIEW_H = 720;
+export const HUD_H = 64;
+export const THIEF_R = 20;
+export const WALL_T = 16;
+
+function rim() {
   return [
-    { x: 0, y: HUD_TOP, w: VIEW_WIDTH, h: WALL, blocksSight: true, blocksMove: true },
-    { x: 0, y: VIEW_HEIGHT - WALL, w: VIEW_WIDTH, h: WALL, blocksSight: true, blocksMove: true },
-    { x: 0, y: HUD_TOP, w: WALL, h: VIEW_HEIGHT - HUD_TOP, blocksSight: true, blocksMove: true },
-    { x: VIEW_WIDTH - WALL, y: HUD_TOP, w: WALL, h: VIEW_HEIGHT - HUD_TOP, blocksSight: true, blocksMove: true },
+    { x: 0, y: HUD_H, w: VIEW_W, h: WALL_T },
+    { x: 0, y: VIEW_H - WALL_T, w: VIEW_W, h: WALL_T },
+    { x: 0, y: HUD_H, w: WALL_T, h: VIEW_H - HUD_H },
+    { x: VIEW_W - WALL_T, y: HUD_H, w: WALL_T, h: VIEW_H - HUD_H },
   ];
 }
 
-function wall(x, y, w, h) {
-  return { x, y, w, h, blocksSight: true, blocksMove: true };
+function bar(x, y, w, h) {
+  return { x, y, w, h };
 }
 
-function crate(x, y, w, h) {
-  return { x, y, w, h, kind: 'crate', blocksSight: true, blocksMove: true };
+// cover: kind case | desk | safe | plant | pillar.
+// Cases, desks, safes and pillars block movement AND sight;
+// plants block movement only (low leaves, you can see over them).
+function piece(x, y, w, h, kind) {
+  return { x, y, w, h, kind };
 }
 
-function desk(x, y, w, h) {
-  return { x, y, w, h, kind: 'desk', blocksSight: true, blocksMove: true };
-}
-
-function plant(x, y, w, h) {
-  return { x, y, w, h, kind: 'plant', blocksSight: false, blocksMove: true };
-}
-
-function galleryRoom() {
+function gallery() {
   return {
     name: 'ROOM 1 — THE GALLERY',
-    subtitle: 'Midnight at the Marlowe Museum',
-    objective: 'Steal the Starlit Bust, then reach the getaway door.',
-    floorTint: '#1b2133',
-    floorTintAlt: '#171d2d',
-    walls: [
-      ...borderWalls(),
-      wall(380, HUD_TOP, 16, 228),      // top stub: left lane opens below it
-      wall(884, 420, 16, VIEW_HEIGHT - WALL - 420), // bottom stub: right lane opens above it
-      wall(560, 430, 200, 16),          // mid block: splits the middle lane
-    ],
+    sub: 'Midnight at the Marlowe Museum',
+    goal: 'Steal the Starlit Bust, then slip out the getaway door.',
+    floorA: '#9a682c',
+    floorB: '#86571f',
+    walls: [...rim()],
     cover: [
-      crate(200, 180, 70, 50),
-      crate(1000, 180, 70, 50),
-      desk(560, 560, 80, 50),
-      crate(180, 480, 60, 60),
-      crate(1060, 520, 60, 60),
-      plant(640, 240, 44, 44),
+      piece(280, 200, 130, 74, 'case'),
+      piece(580, 200, 130, 74, 'case'),
+      piece(880, 200, 130, 74, 'case'),
+      piece(280, 480, 130, 74, 'case'),
+      piece(880, 480, 130, 74, 'case'),
+      piece(1080, 180, 110, 60, 'desk'),
+      piece(596, 296, 40, 40, 'pillar'),
+      piece(596, 500, 40, 40, 'pillar'),
+      piece(120, 600, 54, 54, 'plant'),
+      piece(1160, 600, 54, 54, 'plant'),
     ],
-    vents: [
-      { x: 420, y: 640, w: 120, h: 26 },
-      { x: 900, y: 120, w: 120, h: 26 },
+    // Velvet ropes flanking the bust: low barriers, see over them.
+    ropes: [
+      { x: 860, y: 330, w: 220, h: 12 },
+      { x: 860, y: 470, w: 220, h: 12 },
     ],
+    ducts: [{ x: 40, y: 648, w: 1060, h: 40 }],
+    lamps: [{ x: 320, y: 140 }, { x: 960, y: 140 }, { x: 640, y: 640 }],
+    lasers: [],
     doors: [],
     keycard: null,
     loot: [
-      { x: 640, y: 150, kind: 'painting', value: 800, required: true, taken: false, label: 'STARLIT BUST' },
-      { x: 150, y: 640, kind: 'vase', value: 300, required: false, taken: false, label: 'JADE VASE' },
-      { x: 1150, y: 120, kind: 'gem', value: 350, required: false, taken: false, label: 'OPAL' },
+      { x: 970, y: 400, kind: 'bust', value: 1200, target: true, taken: false, label: 'STARLIT BUST' },
+      { x: 345, y: 237, kind: 'mini', value: 150, target: false, taken: false, label: 'MINIATURE' },
+      { x: 645, y: 237, kind: 'mini', value: 150, target: false, taken: false, label: 'MINIATURE' },
+      { x: 945, y: 237, kind: 'mini', value: 150, target: false, taken: false, label: 'MINIATURE' },
+      { x: 345, y: 517, kind: 'vase', value: 150, target: false, taken: false, label: 'JADE VASE' },
+      { x: 945, y: 517, kind: 'vase', value: 150, target: false, taken: false, label: 'JADE VASE' },
     ],
     guards: [
-      { x: 300, y: 180, waypoints: [[300, 180], [980, 180]], speed: 55 },
-      { x: 980, y: 600, waypoints: [[980, 600], [300, 600]], speed: 55 },
+      { x: 300, y: 360, route: [[300, 360], [980, 360]], speed: 58 },
+      { x: 220, y: 140, route: [[220, 140], [1060, 140]], speed: 58 },
     ],
-    cameras: [
-      { x: 640, y: HUD_TOP + 8, baseFacing: Math.PI / 2, sweep: 0.6, speed: 0.5, range: 260 },
+    cams: [
+      { x: 640, y: 84, base: Math.PI / 2, sweep: 0.7, speed: 0.55, range: 280, phase: 0 },
     ],
-    playerStart: { x: 120, y: 650 },
-    exit: { x: 1140, y: 628, w: 110, h: 62, label: 'GETAWAY' },
+    spawn: { x: 90, y: 400 },
+    exit: { x: 1150, y: 620, w: 110, h: 70 },
   };
 }
 
-function corridorRoom() {
+function corridor() {
   return {
     name: 'ROOM 2 — THE VAULT CORRIDOR',
-    subtitle: 'Past the guards, through the keycard door',
-    objective: 'Find the keycard, open the vault door, take the gold bars.',
-    floorTint: '#221d2e',
-    floorTintAlt: '#1d1929',
+    sub: 'Past the guards, through the keycard door',
+    goal: 'Find the keycard, open the vault door, take the gold bars.',
+    floorA: '#8a5f2a',
+    floorB: '#77521f',
     walls: [
-      ...borderWalls(),
-      wall(60, 260, 640, 16),            // upper corridor wall: gap on the right
-      wall(580, 460, 640, 16),           // lower corridor wall: gap on the left
-      wall(60, 260, 16, 200),            // alcove wall for the keycard nook
+      ...rim(),
+      bar(16, 230, 700, 18),   // top lane wall, left of the keycard door
+      bar(860, 230, 404, 18),  // top lane wall, right of the keycard door
+      bar(300, 460, 964, 18),  // middle lane wall: gap on the left
     ],
     cover: [
-      crate(300, 340, 70, 50),
-      crate(950, 340, 70, 50),
-      desk(500, 560, 80, 50),
-      crate(900, 560, 60, 60),
-      plant(1100, 200, 44, 44),
+      piece(950, 120, 130, 74, 'case'),
+      piece(1080, 520, 100, 80, 'safe'),
+      piece(200, 520, 110, 60, 'desk'),
+      piece(500, 540, 130, 74, 'case'),
+      piece(120, 150, 54, 54, 'plant'),
+      piece(640, 330, 40, 40, 'pillar'),
     ],
-    vents: [
-      { x: 760, y: 640, w: 120, h: 26 },
-      { x: 180, y: 120, w: 120, h: 26 },
-    ],
+    ropes: [],
+    ducts: [{ x: 340, y: 410, w: 600, h: 34 }],
+    lamps: [{ x: 300, y: 140 }, { x: 900, y: 140 }, { x: 640, y: 620 }],
+    lasers: [],
     doors: [
-      { x: 640, y: 276, w: 16, h: 184, locked: 'keycard', open: false, label: 'KEYCARD DOOR' },
+      { x: 716, y: 230, w: 144, h: 18, kind: 'keycard', open: false, label: 'KEYCARD DOOR' },
     ],
-    keycard: { x: 200, y: 560, taken: false },
+    keycard: { x: 555, y: 175, taken: false },
     loot: [
-      { x: 1100, y: 150, kind: 'gold', value: 1200, required: true, taken: false, label: 'GOLD BARS' },
-      { x: 150, y: 150, kind: 'painting', value: 400, required: false, taken: false, label: 'MOONLIT CANVAS' },
-      { x: 640, y: 640, kind: 'gem', value: 350, required: false, taken: false, label: 'RUBY' },
+      { x: 990, y: 630, kind: 'bars', value: 1500, target: true, taken: false, label: 'GOLD BARS' },
+      { x: 1015, y: 157, kind: 'canvas', value: 200, target: false, taken: false, label: 'MOONLIT CANVAS' },
+      { x: 255, y: 550, kind: 'gem', value: 200, target: false, taken: false, label: 'RUBY' },
+      { x: 565, y: 577, kind: 'bars', value: 250, target: false, taken: false, label: 'GOLD BARS' },
     ],
     guards: [
-      { x: 250, y: 170, waypoints: [[250, 170], [1000, 170]], speed: 58 },
-      { x: 700, y: 330, waypoints: [[700, 330], [700, 420]], speed: 50 },
-      { x: 1000, y: 620, waypoints: [[1000, 620], [250, 620]], speed: 58 },
+      { x: 150, y: 150, route: [[150, 150], [900, 150]], speed: 60 },
+      { x: 900, y: 350, route: [[900, 350], [300, 350]], speed: 55 },
+      { x: 300, y: 600, route: [[300, 600], [1000, 600]], speed: 60 },
     ],
-    cameras: [
-      { x: 340, y: HUD_TOP + 8, baseFacing: Math.PI / 2, sweep: 0.55, speed: 0.6, range: 260 },
-      { x: 940, y: HUD_TOP + 8, baseFacing: Math.PI / 2, sweep: 0.55, speed: 0.6, range: 260 },
+    cams: [
+      { x: 340, y: 84, base: Math.PI / 2, sweep: 0.6, speed: 0.6, range: 280, phase: 0 },
+      { x: 940, y: 700, base: -Math.PI / 2, sweep: 0.6, speed: 0.6, range: 280, phase: 1.5 },
     ],
-    playerStart: { x: 120, y: 650 },
-    exit: { x: 1140, y: 628, w: 110, h: 62, label: 'GETAWAY' },
+    spawn: { x: 90, y: 150 },
+    exit: { x: 1150, y: 620, w: 110, h: 70 },
   };
 }
 
-function vaultRoom() {
+function vault() {
   return {
     name: 'ROOM 3 — THE VAULT',
-    subtitle: 'The Aurora Diamond is behind the vault door',
-    objective: 'Take the Aurora Diamond, then get out through the getaway door.',
-    floorTint: '#1d2b26',
-    floorTintAlt: '#192620',
+    sub: 'The Aurora Diamond waits behind the vault door',
+    goal: 'Take the Aurora Diamond, then get out through the getaway door.',
+    floorA: '#6e6a66',
+    floorB: '#5d5a56',
     walls: [
-      ...borderWalls(),
-      wall(480, HUD_TOP, 16, 188),      // vault alcove, left cheek
-      wall(784, HUD_TOP, 16, 188),      // vault alcove, right cheek
-      wall(496, 244, 104, 16),          // vault front, left of the door gap
-      wall(680, 244, 104, 16),          // vault front, right of the door gap
+      ...rim(),
+      bar(480, 80, 16, 180),   // vault alcove, left cheek
+      bar(784, 80, 16, 180),   // vault alcove, right cheek
+      bar(496, 244, 104, 16),  // vault front, left of the door gap
+      bar(680, 244, 104, 16),  // vault front, right of the door gap
     ],
     cover: [
-      crate(250, 500, 70, 50),
-      crate(1000, 500, 70, 50),
-      desk(420, 560, 80, 50),
-      desk(820, 560, 80, 50),
-      plant(640, 420, 44, 44),
+      piece(240, 300, 90, 80, 'safe'),
+      piece(950, 300, 90, 80, 'safe'),
+      piece(240, 480, 90, 80, 'safe'),
+      piece(950, 480, 90, 80, 'safe'),
+      piece(120, 620, 54, 54, 'plant'),
+      piece(1100, 120, 54, 54, 'plant'),
     ],
-    vents: [
-      { x: 180, y: 640, w: 120, h: 26 },
-      { x: 980, y: 640, w: 120, h: 26 },
+    ropes: [],
+    ducts: [
+      { x: 120, y: 648, w: 220, h: 40 },
+      { x: 920, y: 648, w: 200, h: 40 },
+    ],
+    lamps: [{ x: 300, y: 140 }, { x: 980, y: 140 }, { x: 640, y: 620 }],
+    lasers: [
+      { x1: 400, y1: 300, x2: 880, y2: 300 },
+      { x1: 400, y1: 460, x2: 880, y2: 460 },
     ],
     doors: [],
     keycard: null,
     loot: [
-      { x: 640, y: 145, kind: 'diamond', value: 2500, required: true, taken: false, label: 'AURORA DIAMOND' },
-      { x: 545, y: 178, kind: 'gold', value: 600, required: false, taken: false, label: 'GOLD BARS' },
-      { x: 735, y: 178, kind: 'gold', value: 600, required: false, taken: false, label: 'GOLD BARS' },
+      { x: 640, y: 160, kind: 'diamond', value: 2000, target: true, taken: false, label: 'AURORA DIAMOND' },
+      { x: 300, y: 200, kind: 'pile', value: 300, target: false, taken: false, label: 'GOLD PILE' },
+      { x: 980, y: 200, kind: 'pile', value: 300, target: false, taken: false, label: 'GOLD PILE' },
+      { x: 300, y: 560, kind: 'pile', value: 300, target: false, taken: false, label: 'GOLD PILE' },
+      { x: 980, y: 560, kind: 'pile', value: 300, target: false, taken: false, label: 'GOLD PILE' },
+      { x: 420, y: 380, kind: 'bars', value: 250, target: false, taken: false, label: 'GOLD BARS' },
+      { x: 860, y: 380, kind: 'bars', value: 250, target: false, taken: false, label: 'GOLD BARS' },
     ],
     guards: [
-      { x: 300, y: 380, waypoints: [[300, 380], [980, 380]], speed: 62 },
-      { x: 640, y: 620, waypoints: [[640, 620], [640, 430]], speed: 55 },
+      { x: 250, y: 330, route: [[250, 330], [1030, 330]], speed: 62 },
+      { x: 250, y: 580, route: [[250, 580], [1030, 580]], speed: 62 },
     ],
-    cameras: [
-      { x: 200, y: HUD_TOP + 8, baseFacing: Math.PI / 2, sweep: 0.5, speed: 0.7, range: 260 },
-      { x: 640, y: HUD_TOP + 8, baseFacing: Math.PI / 2, sweep: 0.5, speed: 0.7, range: 260 },
-      { x: 1080, y: HUD_TOP + 8, baseFacing: Math.PI / 2, sweep: 0.5, speed: 0.7, range: 260 },
+    cams: [
+      { x: 200, y: 84, base: Math.PI / 2, sweep: 0.55, speed: 0.7, range: 280, phase: 0 },
+      { x: 640, y: 84, base: Math.PI / 2, sweep: 0.55, speed: 0.7, range: 280, phase: 1.2 },
+      { x: 1080, y: 84, base: Math.PI / 2, sweep: 0.55, speed: 0.7, range: 280, phase: 2.4 },
     ],
-    playerStart: { x: 120, y: 650 },
-    exit: { x: 1140, y: 628, w: 110, h: 62, label: 'GETAWAY' },
+    spawn: { x: 640, y: 650 },
+    exit: { x: 1150, y: 620, w: 110, h: 70 },
   };
 }
 
 export function buildRooms() {
-  return [galleryRoom(), corridorRoom(), vaultRoom()];
+  return [gallery(), corridor(), vault()];
 }
 
-// Every rectangle that stops movement: walls, tall cover and doors
-// that are still closed.
+function blocksSight(kind) {
+  return kind === 'case' || kind === 'desk' || kind === 'safe' || kind === 'pillar';
+}
+
+// Every rectangle that stops movement: walls, all cover, ropes,
+// and doors that are still closed.
 export function solidsOf(room) {
-  const solids = [...room.walls, ...room.cover];
-  for (const door of room.doors) {
-    if (!door.open) solids.push({ ...door, blocksSight: true, blocksMove: true });
+  const out = [...room.walls, ...room.cover, ...room.ropes];
+  for (const d of room.doors) {
+    if (!d.open) out.push(d);
   }
-  return solids;
+  return out;
 }
 
-// Circle (the thief) against a list of solid rectangles.
-export function circleHitsSolids(x, y, r, solids) {
-  for (const s of solids) {
-    const nearestX = Math.max(s.x, Math.min(x, s.x + s.w));
-    const nearestY = Math.max(s.y, Math.min(y, s.y + s.h));
-    const dx = x - nearestX;
-    const dy = y - nearestY;
-    if (dx * dx + dy * dy < r * r) return true;
+// Rectangles that block a sight line: walls, tall cover, closed doors.
+export function sightOf(room) {
+  const out = [...room.walls];
+  for (const c of room.cover) {
+    if (blocksSight(c.kind)) out.push(c);
   }
-  return false;
+  for (const d of room.doors) {
+    if (!d.open) out.push(d);
+  }
+  return out;
 }
 
-// Move the circle one axis at a time so it slides along walls instead
-// of sticking to them.
-export function moveCircleWithCollision(x, y, r, dx, dy, solids) {
+// Slide a circle through the solids, one axis at a time.
+export function moveCircle(x, y, r, dx, dy, solids) {
   let nx = x;
   let ny = y;
-  if (!circleHitsSolids(x + dx, y, r, solids)) nx = x + dx;
-  if (!circleHitsSolids(nx, y + dy, r, solids)) ny = y + dy;
+  let hit = false;
+  for (const s of solids) {
+    const [px] = pushCircleOutOfRect(x + dx, y, r, s);
+    if (px !== x + dx) { hit = true; break; }
+  }
+  if (!hit) nx = x + dx;
+  hit = false;
+  for (const s of solids) {
+    const [, py] = pushCircleOutOfRect(nx, y + dy, r, s);
+    if (py !== y + dy) { hit = true; break; }
+  }
+  if (!hit) ny = y + dy;
   return { x: nx, y: ny };
+}
+
+// True when the circle overlaps any solid.
+export function circleBlocked(x, y, r, solids) {
+  for (const s of solids) {
+    const [px, py] = pushCircleOutOfRect(x, y, r, s);
+    if (px !== x || py !== y) return true;
+  }
+  return false;
 }
