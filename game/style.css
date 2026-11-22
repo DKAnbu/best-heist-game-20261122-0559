@@ -1,0 +1,43 @@
+/* VAULTBREAK — page chrome around the canvas. The game itself draws
+   everything (HUD included) on the canvas so a screenshot is the game. */
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #0a0d16;
+  color: #dfe6f2;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#stage {
+  width: min(1280px, 100vw);
+}
+
+#game {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #10141f;
+  border: 1px solid #2a3348;
+  border-radius: 6px;
+  cursor: crosshair;
+}
+
+#help {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  padding: 10px 4px 0;
+  font-size: 13px;
+  color: #8b96ad;
+}
+
+#help b { color: #e8c15a; font-weight: 600; }
