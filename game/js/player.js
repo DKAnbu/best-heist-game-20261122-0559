@@ -1,102 +1,117 @@
 // player.js — the thief: WASD movement with wall sliding, the three
 // tools (smoke pellet, EMP pulse, coin toss), loot and keycard pickup.
+// Ducts hide the thief but slow the crawl to a sneak.
 
-import { moveCircleWithCollision, PLAYER_RADIUS } from './level.js';
-import { distanceBetween } from './vision.js';
+import { moveCircle, THIEF_R } from './level.js';
+import { insideDuct } from './vision.js';
 
-export const PLAYER_SPEED = 185;
+export const THIEF_SPEED = 178;
+export const DUCT_SPEED = 112;
 
-export function makePlayer(start) {
+export function spawnThief(start) {
   return {
     x: start.x,
     y: start.y,
-    facing: -Math.PI / 2,
+    r: THIEF_R,
+    dir: -Math.PI / 2,
     moving: false,
-    smokeCharges: 3,
-    empCharges: 2,
-    coinCharges: 5,
-    hasKeycard: false,
-    lootValue: 0,
-    lootCount: 0,
-    stepPhase: 0,
+    step: 0,
+    smoke: 3,
+    emp: 2,
+    coins: 5,
+    keycard: false,
   };
 }
 
-// Keys is a Set of currently held key codes (lowercase).
-export function updatePlayer(player, dt, keys, solids) {
+// keys is a Set of currently held key codes (lowercase).
+export function stepThief(thief, dt, keys, solids, ducts) {
   let dx = 0;
   let dy = 0;
   if (keys.has('arrowup') || keys.has('w')) dy -= 1;
   if (keys.has('arrowdown') || keys.has('s')) dy += 1;
   if (keys.has('arrowleft') || keys.has('a')) dx -= 1;
   if (keys.has('arrowright') || keys.has('d')) dx += 1;
-  player.moving = dx !== 0 || dy !== 0;
-  if (!player.moving) return;
+  thief.moving = dx !== 0 || dy !== 0;
+  if (!thief.moving) return;
   const len = Math.hypot(dx, dy);
-  const stepX = (dx / len) * PLAYER_SPEED * dt;
-  const stepY = (dy / len) * PLAYER_SPEED * dt;
-  const moved = moveCircleWithCollision(player.x, player.y, PLAYER_RADIUS, stepX, stepY, solids);
-  player.x = moved.x;
-  player.y = moved.y;
-  player.facing = Math.atan2(stepY, stepX);
-  player.stepPhase += dt * 10;
+  const speed = insideDuct(thief.x, thief.y, ducts) ? DUCT_SPEED : THIEF_SPEED;
+  const mx = (dx / len) * speed * dt;
+  const my = (dy / len) * speed * dt;
+  const moved = moveCircle(thief.x, thief.y, thief.r, mx, my, solids);
+  thief.x = moved.x;
+  thief.y = moved.y;
+  thief.dir = Math.atan2(my, mx);
+  thief.step += dt * 11;
 }
 
 // A smoke pellet blooms at the thief's feet and hides everything
-// inside it for a few seconds. Costs one charge.
-export function throwSmoke(player, clouds) {
-  if (player.smokeCharges <= 0) return null;
-  player.smokeCharges -= 1;
-  const cloud = { x: player.x, y: player.y, r: 110, ttl: 4 };
+// inside it for six seconds. Costs one charge.
+export function useSmoke(thief, clouds) {
+  if (thief.smoke <= 0) return null;
+  thief.smoke -= 1;
+  const cloud = { x: thief.x, y: thief.y, r: 100, ttl: 6 };
   clouds.push(cloud);
   return cloud;
 }
 
 // An EMP pulse knocks every camera out for six seconds. Costs one charge.
-export function fireEmp(player) {
-  if (player.empCharges <= 0) return 0;
-  player.empCharges -= 1;
+export function useEmp(thief) {
+  if (thief.emp <= 0) return 0;
+  thief.emp -= 1;
   return 6;
 }
 
 // A coin arcs to the clicked floor point and clinks. Costs one charge.
-// Returns the landing point, or null when out of coins.
-export function tossCoin(player, targetX, targetY) {
-  if (player.coinCharges <= 0) return null;
-  player.coinCharges -= 1;
-  return { x: targetX, y: targetY, ttl: 1.2, landed: false, landX: targetX, landY: targetY };
+export function tossCoin(thief, tx, ty) {
+  if (thief.coins <= 0) return null;
+  thief.coins -= 1;
+  return { x: tx, y: ty, ttl: 1.2, life: 1.2 };
 }
 
-// Pick up whatever loot, keycard or coin the thief is standing on.
-// Returns a list of events for sound and score popups.
-export function collectPickups(player, room) {
+function near(ax, ay, bx, by, d) {
+  const dx = ax - bx;
+  const dy = ay - by;
+  return dx * dx + dy * dy < d * d;
+}
+
+// Pick up whatever loot or keycard the thief is standing on.
+// Returns events for sound and score popups.
+export function grabPickups(thief, room) {
   const events = [];
   if (room.keycard && !room.keycard.taken &&
-      distanceBetween(player.x, player.y, room.keycard.x, room.keycard.y) < 30) {
+      near(thief.x, thief.y, room.keycard.x, room.keycard.y, 32)) {
     room.keycard.taken = true;
-    player.hasKeycard = true;
+    thief.keycard = true;
     for (const door of room.doors) {
-      if (door.locked === 'keycard') door.open = true;
+      if (door.kind === 'keycard') door.open = true;
     }
     events.push({ type: 'keycard' });
   }
   for (const loot of room.loot) {
-    if (!loot.taken && distanceBetween(player.x, player.y, loot.x, loot.y) < 30) {
+    if (!loot.taken && near(thief.x, thief.y, loot.x, loot.y, 36)) {
       loot.taken = true;
-      player.lootValue += loot.value;
-      player.lootCount += 1;
-      events.push({ type: 'loot', value: loot.value, label: loot.label, required: loot.required });
+      events.push({ type: 'loot', value: loot.value, label: loot.label, target: loot.target });
     }
   }
   return events;
 }
 
-export function requiredLootTaken(room) {
-  return room.loot.filter((loot) => loot.required).every((loot) => loot.taken);
+export function targetTaken(room) {
+  return room.loot.filter((l) => l.target).every((l) => l.taken);
 }
 
-export function playerOnExit(player, room) {
-  const exit = room.exit;
-  return player.x > exit.x && player.x < exit.x + exit.w &&
-    player.y > exit.y && player.y < exit.y + exit.h;
+export function thiefOnExit(thief, room) {
+  const e = room.exit;
+  return thief.x > e.x && thief.x < e.x + e.w && thief.y > e.y && thief.y < e.y + e.h;
+}
+
+// Total loot across all rooms (carried from room to room).
+export function totalLoot(rooms) {
+  let sum = 0;
+  for (const room of rooms) {
+    for (const loot of room.loot) {
+      if (loot.taken) sum += loot.value;
+    }
+  }
+  return sum;
 }
